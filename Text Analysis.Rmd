@@ -1,0 +1,253 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(tidytext)
+library(widyr)
+library(chorddiag)
+library(SnowballC)
+library(stringi)
+library(ggplot2)
+library(tidyr)
+library(hrbrthemes)
+library(kableExtra)
+library(openxlsx)
+```
+
+```{r}
+# Read CSV into R
+MyData <- read_csv("moviedataset.csv")
+```
+
+
+```{r}
+scripts_tokens <- MyData%>%
+  mutate(actor_and_movie=paste0(actors,"_",`movie title`))%>%
+  unnest_tokens(word,Scripts)%>%
+  mutate(word=str_remove_all(word,"[:punct:]"))%>%
+  anti_join(stop_words)%>%
+  count(actor_and_movie,word)%>%
+  filter(nchar(word)>2 & stringi::stri_enc_isascii(word) &   !str_detect(word,'[0-9]'))%>%
+  print()
+```
+
+```{r}
+scripts_tokens <- MyData%>%
+  mutate(actor_and_movie=paste0(actors,"_",`movie title`))%>%
+  unnest_tokens(word,Scripts)%>%
+  mutate(word=str_remove_all(word,"[:punct:]"))%>%
+  anti_join(stop_words)%>%
+  count(actor_and_movie,word)%>%
+  filter(nchar(word)>2 & stringi::stri_enc_isascii(word) &   !str_detect(word,'[0-9]'))%>%
+  print()
+
+```
+
+```{r}
+scripts_tf_idf<-scripts_tokens%>%bind_tf_idf(word,actor_and_movie,n)
+```
+
+
+```{r}
+script_similarity_tfidf<- scripts_tf_idf %>%
+  add_count(actor_and_movie)%>%
+  filter(n>=7)%>%
+  select(-n)%>%
+  pairwise_similarity(actor_and_movie, word, tf_idf) %>%
+  separate(item1, c('actors', 'movie1'),'_') %>%
+  separate(item2, c('actor2', 'movie2'),'_') %>%
+  filter(actors==actor2)%>%
+  group_by(actors)%>%
+  summarise(avg_similarity=mean(similarity))
+```
+
+
+```{r}
+genre_count <- MyData%>%
+  separate_rows(genres,sep=',')%>%
+  mutate(genres=str_trim(genres))%>%
+  group_by(actors,genres)%>%
+  summarise(count_genre= n())%>%
+  top_n(1,count_genre)%>%
+  add_count(actors)%>%
+  mutate(genres=paste0(genres,collapse = ', '))%>%
+  distinct(actors,.keep_all = T)%>%
+  as_tibble()
+```
+
+```{r}
+new_table <- merge(script_similarity_tfidf, genre_count, by = "actors")
+```
+
+```{r}
+genre_and_count <- new_table %>% filter(avg_similarity >=0.8)%>%count(genres)
+```
+
+
+```{r}
+Eighty_above <- new_table[which(new_table$avg_similarity>= 0.8),]
+Eighty_above
+```
+```{r}
+top_twenty <- new_table[which(new_table$avg_similarity<= 0.90),]
+top_twenty
+```
+
+
+```{r}
+new_table %>% filter(avg_similarity >=0.8)%>%count(genres)%>%filter(nn>5)%>%ggplot(aes(genres))+geom_bar()
+```
+
+
+```{r}
+genre_num <- genre_count%>%count(genres)
+```
+
+```{r}
+genre_num <- genre_num%>%rename(total=nn)
+```
+
+```{r}
+genre_and_total <- genre_and_count%>%left_join(genre_num)
+```
+
+```{r}
+genre_and_total%>%filter(nn>=5)%>%mutate(percentage=nn/total)
+
+```
+
+```{r}
+genre_tokens <- MyData%>%
+  unnest_tokens(word,Scripts)%>%
+  mutate(word=str_remove_all(word,"[:punct:]"))%>%
+  anti_join(stop_words)%>%
+  mutate(word = wordStem(word))%>%
+  count(genres, word)%>%
+  filter(nchar(word)>2 & stringi::stri_enc_isascii(word) &   !str_detect(word,'[0-9]'))%>%
+  print()
+```
+
+```{r}
+genre_and_year <- MyData%>%
+  unnest_tokens(gen,genres)%>%
+  count(gen, `release year`)%>%
+  print()
+```
+
+```{r}
+unique(genre_and_year)
+```
+
+```{r}
+genres_tf_idf<-genre_tokens%>%bind_tf_idf(word,genres,n)%>%
+  print()
+```
+
+```{r}
+actor_genre_count <- MyData%>% distinct(actors, genres, .keep_all = TRUE)%>% count(actors)%>% arrange(-n)
+```
+
+```{r}
+top_two_genres <- MyData%>%
+  separate_rows(genres,sep=',')%>%
+  mutate(genres=str_trim(genres))%>%
+  count(actors,genres)%>%
+  group_by(actors)%>%
+  top_n(2,n)%>%
+  as_tibble()%>%
+  print()
+```
+
+```{r}
+genres <- unique(top_two_genres$genres)
+length(genres)
+```
+
+```{r}
+m <- matrix(data = rep(0,144),nrow = 12,ncol = 12)
+```
+
+```{r}
+dimnames(m) <- list(top1=genres,top2=genres)
+```
+
+```{r}
+get_genre_matrix <- function(actor){
+lst_gen <- top_two_genres%>%
+  filter(actors==actor)%>%
+  pull(genres)
+
+
+current_total <- m[rownames(m) %in% lst_gen[1],
+                  colnames(m) %in% lst_gen[2:length(lst_gen)]] 
+
+m[rownames(m) %in% lst_gen[1],colnames(m) %in% lst_gen[2:length(lst_gen)]] <- current_total+1
+return(m)
+}
+```
+
+```{r}
+get_genre_matrix('Denzel Washington')
+```
+
+```{r}
+unique_actors <- unique(top_two_genres$actors)
+for(i in unique_actors){
+  lst_gen <- top_two_genres%>%
+    filter(actors==i)%>%
+    pull(genres)
+  
+  current_total <- m[rownames(m) %in% lst_gen[1],
+                     colnames(m) %in% lst_gen[2:length(lst_gen)]] 
+  m[rownames(m) %in% lst_gen[1],colnames(m) %in% lst_gen[2:length(lst_gen)]] <- current_total+1
+}
+```
+
+```{r}
+m
+```
+
+```{r}
+chorddiag(m)
+```
+
+
+
+
+```{r}
+# Barplot
+script_similarity_tfidf %>%
+  filter(!is.na(avg_similarity)) %>%
+  arrange(avg_similarity) %>%
+  mutate(actors=factor(actors, actors)) %>%
+  ggplot( aes(x=actors, y=avg_similarity) ) +
+    geom_bar(stat="identity", fill="#69b3a2")+
+    coord_flip() +
+    theme_ipsum() +
+    theme(
+      panel.grid.minor.y = element_blank(),
+      panel.grid.major.y = element_blank(),
+      legend.position="none"
+    ) +
+    xlab("") +
+    ylab("Average similarity of movie scripts")
+```
+```{r}
+write.xlsx(genre_count, file = "genre_count.xlsx", colNames = TRUE, borders = "surrounding")
+```
+
+```{r}
+releaseYear_tokens <- MyData%>%
+  mutate(actor_and_movie=paste0(actors,"_",`movie title`))%>%
+  unnest_tokens(word,Scripts)%>%
+  mutate(word=str_remove_all(word,"[:punct:]"))%>%
+  anti_join(stop_words)%>%
+  count(actor_and_movie,word)%>%
+  filter(nchar(word)>2 & stringi::stri_enc_isascii(word) &   !str_detect(word,'[0-9]'))%>%
+  print()
+```
+
